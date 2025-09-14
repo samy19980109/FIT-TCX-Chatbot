@@ -1,0 +1,11 @@
+streamlit
+google-cloud-aiplatform
+fitdecode
+python-tcxparser
+python-dotenv
+plotly
+folium
+streamlit-folium
+pandas
+numpy
+datetime
