@@ -20,12 +20,31 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
+# Get environment variables with defaults
+project_id = os.getenv("GOOGLE_CLOUD_PROJECT_ID", "decent-habitat-338022")
+region = os.getenv("GOOGLE_CLOUD_REGION", "us-central1")
+model_name = os.getenv("MODEL_NAME", "gemini-2.5-flash-lite")
+
+# Validate required environment variables
+if not project_id:
+    st.error("❌ GOOGLE_CLOUD_PROJECT_ID environment variable is not set. Please check your .env file.")
+    st.stop()
+
+if not model_name:
+    st.error("❌ MODEL_NAME environment variable is not set. Please check your .env file.")
+    st.stop()
+
 # Configure Vertex AI
-vertexai.init(
-    project=os.getenv("GOOGLE_CLOUD_PROJECT_ID"),  # Replace with your Google Cloud project ID
-    location=os.getenv("GOOGLE_CLOUD_REGION")      # Replace with your preferred region
-)
-model = GenerativeModel(os.getenv("MODEL_NAME"))  # e.g., "gemini-pro"
+try:
+    vertexai.init(
+        project=project_id,
+        location=region
+    )
+    model = GenerativeModel(model_name)
+except Exception as e:
+    st.error(f"❌ Failed to initialize Vertex AI: {str(e)}")
+    st.error("Please check your Google Cloud credentials and environment variables.")
+    st.stop()
 
 # Page configuration
 st.set_page_config(
@@ -35,19 +54,47 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-def create_heart_rate_chart(hr_values, time_values=None):
+def create_heart_rate_chart(hr_data, time_values=None, filetype="TCX"):
     """Create an interactive heart rate chart"""
-    if not hr_values or len(hr_values) == 0:
-        return None
+    hr_values = []
+    timestamps = []
+    
+    if filetype == "FIT":
+        # For FIT files, hr_data is the records list
+        if not hr_data or not isinstance(hr_data, list):
+            return None
+        
+        # Extract heart rate values and timestamps from FIT records
+        for record in hr_data:
+            if isinstance(record, dict) and 'heart_rate' in record:
+                hr_values.append(record['heart_rate'])
+                if 'timestamp' in record:
+                    timestamps.append(record['timestamp'])
+        
+        if not hr_values:
+            return None
+            
+        # Use timestamps if available, otherwise use range
+        time_data = timestamps if timestamps else range(len(hr_values))
+        
+    else:  # TCX
+        # For TCX files, hr_data is already the hr_values list
+        if not hr_data or len(hr_data) == 0:
+            return None
+        hr_values = hr_data
+        time_data = range(len(hr_values)) if not time_values else time_values
     
     df = pd.DataFrame({
         'Heart Rate': hr_values,
-        'Time': range(len(hr_values)) if not time_values else time_values
+        'Time': time_data
     })
+    
+    # Format time axis label based on data type
+    time_label = 'Time' if filetype == "FIT" and timestamps else 'Time (minutes)'
     
     fig = px.line(df, x='Time', y='Heart Rate', 
                   title='Heart Rate Over Time',
-                  labels={'Time': 'Time (minutes)', 'Heart Rate': 'Heart Rate (bpm)'})
+                  labels={'Time': time_label, 'Heart Rate': 'Heart Rate (bpm)'})
     
     # Add heart rate zones
     fig.add_hline(y=180, line_dash="dash", line_color="red", annotation_text="Max Zone")
@@ -455,11 +502,20 @@ if uploaded_file:
                                     st.write(f"**{key}**: {value}")
                 
                 with tab2:
-                    if workout_data_dict.get('hr_values'):
+                    # Determine what heart rate data to pass based on file type
+                    hr_data_to_pass = None
+                    if filetype == "FIT":
+                        # For FIT files, pass the records list
+                        hr_data_to_pass = workout_data_dict.get('records', [])
+                    else:
+                        # For TCX files, pass the hr_values list
+                        hr_data_to_pass = workout_data_dict.get('hr_values', [])
+                    
+                    if hr_data_to_pass:
                         st.markdown("#### 💓 Heart Rate Analysis")
                         hr_chart = create_heart_rate_chart(
-                            workout_data_dict['hr_values'],
-                            workout_data_dict.get('time_values')
+                            hr_data_to_pass,
+                            workout_data_dict.get('time_values'), filetype
                         )
                         if hr_chart:
                             st.plotly_chart(hr_chart, use_container_width=True)
@@ -467,13 +523,22 @@ if uploaded_file:
                         # HR Statistics
                         col1, col2, col3 = st.columns(3)
                         with col1:
-                            if workout_data_dict.get('hr_avg'):
+                            if filetype == "FIT" and workout_data_dict.get('summary', {}).get('avg_heart_rate'):
+                                avg_hr = int(float(workout_data_dict['summary']['avg_heart_rate']))
+                                st.metric("Average HR", f"{avg_hr} bpm")
+                            elif filetype == "TCX" and workout_data_dict.get('hr_avg'):
                                 st.metric("Average HR", f"{workout_data_dict['hr_avg']} bpm")
                         with col2:
-                            if workout_data_dict.get('hr_max'):
+                            if filetype == "FIT" and workout_data_dict.get('summary', {}).get('max_heart_rate'):
+                                max_hr = int(float(workout_data_dict['summary']['max_heart_rate']))
+                                st.metric("Maximum HR", f"{max_hr} bpm")
+                            elif filetype == "TCX" and workout_data_dict.get('hr_max'):
                                 st.metric("Maximum HR", f"{workout_data_dict['hr_max']} bpm")
                         with col3:
-                            if workout_data_dict.get('hr_min'):
+                            if filetype == "FIT" and workout_data_dict.get('summary', {}).get('min_heart_rate'):
+                                min_hr = int(float(workout_data_dict['summary']['min_heart_rate']))
+                                st.metric("Minimum HR", f"{min_hr} bpm")
+                            elif filetype == "TCX" and workout_data_dict.get('hr_min'):
                                 st.metric("Minimum HR", f"{workout_data_dict['hr_min']} bpm")
                     else:
                         st.info("No heart rate data available in this workout file.")
